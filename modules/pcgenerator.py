@@ -39,7 +39,7 @@ def calibrate():
 	diagram.add(
 		diagram.polygon(
 			[(10,10), (90,10), (90,90), (10,90), (10,10)],
-			fill='white',
+			fill="fill:none",  #'white',
 			stroke='red',
 			stroke_width=.1))
 	return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>{}'.format(diagram.tostring())
@@ -47,7 +47,7 @@ def calibrate():
 
 class Layout:
 
-	def __init__(self, machine_id, stitches, rows, horz_repeat, vert_repeat, is_blank, is_solid_fill):
+	def __init__(self, machine_id, stitches, rows, horz_repeat, vert_repeat, is_blank, is_solid_fill, use_laser_colors):
 
 		global machine_config
 
@@ -62,6 +62,7 @@ class Layout:
 		self.clip_hole_diameter = machine_config['clip_hole_diameter']
 		self.clip_hole_xoffset = machine_config['clip_hole_xoffset']
 		self.clip_hole_yoffset = machine_config['clip_hole_yoffset']
+		self.clip_hole_skip_row = machine_config['clip_hole_skip_row']
 		self.tractor_hole_diameter = machine_config['tractor_hole_diameter']
 		self.tractor_hole_xoffset = machine_config['tractor_hole_xoffset']
 		self.tractor_hole_yoffset = machine_config['tractor_hole_yoffset']
@@ -74,7 +75,7 @@ class Layout:
 			self.solid_fill = True
 		else:
 			self.solid_fill = is_solid_fill
-
+		self.use_laser_colors = use_laser_colors
 		self.card_rows = rows
 
 		if self.card_rows > 200 or self.card_stitches > machine_config['stitches']:
@@ -88,15 +89,29 @@ class Layout:
 
 		self.card_height = (self.pattern_hole_yoffset * 2) + (((self.card_rows * self.vert_repeat) - 1) * self.row_height)
 
+polygonTemplate = [
+	(.5, .866),
+	(1, 0),
+	(.5, -.866),
+	(-.5, -.866),
+	(-1, 0),
+	(-.5, .866)  ]
+
+def polygonCircleExtension(self):
+	def f(center=(0,0), r=1, **extra):
+		pts = [ (x*r+center[0], y*r+center[1]) for (x, y) in polygonTemplate]
+		return self.polygon(pts, **extra)
+	return f
 
 class PCGenerator:
 
-	def __init__(self, handler, data, machine_id, vert_repeat, is_blank = False, is_solid_fill = False):
+	def __init__(self, handler, data, machine_id, vert_repeat, is_blank = False,
+				 is_solid_fill = False, use_laser_colors = False, polygon_circle = False):
 
 		global machine_config
 
 		self.handler = handler
-                data_dir = os.path.join(os.path.dirname(__file__), '../data/')
+		data_dir = os.path.join(os.path.dirname(__file__), '../data/')
 		with open("{}/{}.json".format(data_dir, machine_id)) as json_config:
 			machine_config = json.loads(json_config.read())
 		if is_blank:
@@ -107,35 +122,66 @@ class PCGenerator:
 			machine_id,
 			len(self.data[0]),
 			len(self.data),
-			machine_config['stitches'] / len(self.data[0]),
+			machine_config['stitches'] // len(self.data[0]),
 			vert_repeat,
 			is_blank,
-			is_solid_fill)
+			is_solid_fill,
+			use_laser_colors)
+		self.polygon_circle = polygon_circle
 
 	def generate(self):
 
 		diagram = self.create_card()
+		if self.polygon_circle:
+			diagram.circle = polygonCircleExtension(diagram)
 
-		objects = []
+		cut = []  # separated for laser into cutting lines and drawing lines 
+		draw = []
 		if (self.layout.overlapping_rows and
 				self.layout.overlapping_row_xoffset and
 				self.layout.overlapping_row_yoffset):
-			self.draw_overlapped_lines(diagram, objects)
+			self.draw_overlapped_lines(diagram, cut)
 		if (self.layout.clip_hole_diameter and
 				self.layout.clip_hole_xoffset):
-			self.draw_clip_holes(diagram, objects)
+			self.draw_clip_holes(diagram, cut)
 		if (self.layout.tractor_hole_diameter and
 				self.layout.tractor_hole_xoffset):
-			self.draw_tractor_holes(diagram, objects)
+			self.draw_tractor_holes(diagram, cut)
 
 		if self.layout.is_blank:
 			self.layout.pattern_hole_diameter = .5
-		self.draw_pattern(diagram, self.data, objects)
+			self.draw_pattern(diagram, self.data, draw)
+		else:
+			self.draw_pattern(diagram, self.data, cut)
 
 		# sort the list to optimize cutting
-		sorted_objects = sorted(objects, key=lambda x: (float(x.attribs['cy']), float(x.attribs['cx'])))
-		for i in sorted_objects:
-			diagram.add(i)
+		def center(x):
+			if type(x) == svgwrite.shapes.Circle:
+				return (float(x.attribs['cy']), float(x.attribs['cx']))
+			elif type(x) == svgwrite.shapes.Polygon:
+				return (x.points[0][1], x.points[0][0]) #just going by the first point, good enough
+			else:
+				raise Exception("shape not handled")
+		sorted_cut = sorted(cut, key=center)
+		sorted_cut.append(outline)
+		sorted_draw = sorted(draw, key=center)
+
+		cut_group = diagram.g()
+		cut_group.attribs["id"] = "cut"
+		draw_group = diagram.g()
+		draw_group.attribs["id"] = "draw"
+
+		for i in sorted_cut:
+			if self.layout.use_laser_colors:
+				i.attribs["stroke"] = "#0000FF"
+			cut_group.add(i)
+		for i in sorted_draw:
+			if self.layout.use_laser_colors:
+				i.attribs["stroke"] = "#FF0000"
+			draw_group.add(i)
+
+		diagram.add(draw_group)
+		diagram.add(cut_group)
 
 		return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>{}'.format(diagram.tostring())
 
@@ -150,20 +196,20 @@ class PCGenerator:
 				'0 0 {0} {1}'.format(self.layout.card_width, self.layout.card_height)),
 			preserveAspectRatio='none')
 
-		diagram.add(diagram.polygon(
+		outline = diagram.polygon(
 			points=self.get_card_shape(),
-			fill='white',
+			fill="fill:none",  #'white',
 			stroke='black',
-			stroke_width=.1))
+			stroke_width=.1)
 
-		return diagram
+		return diagram, outline
 
 	def draw_pattern(self, diagram, lines, objects):
 
-		if self.layout.solid_fill:
-			fill = 'red'
-		else:
-			fill = 'white'
+		#if self.layout.solid_fill:
+		#	fill = 'red'
+		#else:
+		#	fill = 'white'
 
 		# main body of card
 		yoffset = self.layout.pattern_hole_yoffset
@@ -176,7 +222,7 @@ class PCGenerator:
 							if lines[rows][stitches].upper() == 'X':
 								objects.append(diagram.circle(
 									center=(xoffset, yoffset),
-									fill=fill,
+									fill=None if self.layout.solid_fill else "fill:none",  #fill
 									r = (self.layout.pattern_hole_diameter / 2),
 									stroke='black',
 									stroke_width=.1))
@@ -200,7 +246,7 @@ class PCGenerator:
 				for stitches in range(self.layout.card_stitches):
 					objects.append(diagram.circle(
 						center=(xoffset, yoffset),
-						fill='white',
+						fill="fill:none",  #'white',
 						r = (self.layout.pattern_hole_diameter / 2),
 						stroke='black',
 						stroke_width=.1))
@@ -215,7 +261,7 @@ class PCGenerator:
 				for stitches in range(self.layout.card_stitches):
 					objects.append(diagram.circle(
 						center=(xoffset, yoffset),
-						fill='white',
+						fill="fill:none",  #'white',
 						r = (self.layout.pattern_hole_diameter / 2),
 						stroke='black',
 						stroke_width=.1))
@@ -229,7 +275,9 @@ class PCGenerator:
 			objects,
 			self.layout.clip_hole_xoffset,
 			self.layout.clip_hole_yoffset,
-			self.layout.clip_hole_diameter)
+			self.layout.clip_hole_diameter,
+			self.layout.clip_hole_skip_row
+			)
 
 	def draw_tractor_holes(self, diagram, objects):
 
@@ -240,7 +288,7 @@ class PCGenerator:
 			self.layout.tractor_hole_yoffset,
 			self.layout.tractor_hole_diameter)
 
-	def draw_side_holes(self, diagram, objects, xoffset, yoffset, diameter):
+	def draw_side_holes(self, diagram, objects, xoffset, yoffset, diameter, skip_row = 1):
 
 		left_xoffset = xoffset
 		right_xoffset = self.layout.card_width - left_xoffset
@@ -249,18 +297,18 @@ class PCGenerator:
 			# holes on left
 			objects.append(diagram.circle(
 				center=(left_xoffset, yoffset),
-				fill='white',
+				fill="fill:none",  #'white',
 				r = (diameter / 2),
 				stroke='black',
 				stroke_width=.1))
 			# holes on right
 			objects.append(diagram.circle(
 				center=(right_xoffset, yoffset),
-				fill='white',
+				fill="fill:none",  #'white',
 				r = (diameter / 2),
 				stroke='black',
 				stroke_width=.1))
-			yoffset += self.layout.row_height
+			yoffset += self.layout.row_height * skip_row
 
 			if (yoffset >= self.layout.card_height and
 					not self.layout.half_hole_at_bottom):

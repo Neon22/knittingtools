@@ -23,14 +23,15 @@ import logging.config
 import os
 import sys
 import traceback
+import io
 
-from BaseHTTPServer import BaseHTTPRequestHandler
-from BaseHTTPServer import HTTPServer
+from http.server import BaseHTTPRequestHandler
+from http.server import HTTPServer
 
 from handlers import actions
 
 pcgenerator_actions = {
-        "head": actions.pcgenerator_head,
+	"head": actions.pcgenerator_head,
 	'get': actions.pcgenerator_get,
 	'post': actions.pcgenerator_post }
 
@@ -64,14 +65,16 @@ logger = logging.getLogger('root')
 class MyHandler(BaseHTTPRequestHandler):
 
 	def handle_not_found(self):
+		wfile = io.TextIOWrapper(self.wfile)
 		self.send_response(404)
 		self.send_header('Content-type', 'text/html')
 		self.end_headers()
-		self.wfile.write(
+		wfile.write(
 			"<h1>Aw, snap! We seem to have a problem.</h1><p><b>")
-		self.wfile.write('The request resource was not found on this server.')
+		wfile.write('The request resource was not found on this server.')
+		wfile.detach()
 
-        def do_HEAD(self):
+	def do_HEAD(self):
 		try:
 			actions = template_map.get(self.path, None)
 			if actions is None:
