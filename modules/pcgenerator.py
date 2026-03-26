@@ -131,7 +131,7 @@ class PCGenerator:
 
 	def generate(self):
 
-		diagram = self.create_card()
+		diagram, outline = self.create_card()
 		if self.polygon_circle:
 			diagram.circle = polygonCircleExtension(diagram)
 
