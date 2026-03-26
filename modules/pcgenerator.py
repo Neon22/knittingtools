@@ -21,6 +21,7 @@ along with this program. If not, see <http://www.gnu.org/licenses/>.
 import svgwrite
 import json
 import os
+from math import pi, sin, cos
 
 
 machine_config = None
@@ -39,7 +40,7 @@ def calibrate():
 	diagram.add(
 		diagram.polygon(
 			[(10,10), (90,10), (90,90), (10,90), (10,10)],
-			fill="fill:none",  #'white',
+			style="fill:none",  #'white',
 			stroke='red',
 			stroke_width=.1))
 	return '<?xml version="1.0" encoding="UTF-8" standalone="no"?>{}'.format(diagram.tostring())
@@ -89,30 +90,50 @@ class Layout:
 
 		self.card_height = (self.pattern_hole_yoffset * 2) + (((self.card_rows * self.vert_repeat) - 1) * self.row_height)
 
-polygonTemplate = [
-	(.5, .866),
-	(1, 0),
-	(.5, -.866),
-	(-.5, -.866),
-	(-1, 0),
-	(-.5, .866)  ]
+def unitcircle_N_poly(n):
+	"""
+	Make a polygonal approx to a circle with n sides
+	- approximations from 3-10 are aligned visually with a 
+	  horizontal flat edge
+	"""
+	offsets = [90/n, 45, 90/n, 0, 90/n, 22.5, 90/n] # for n= 3 to 9
+	offset = (pi / 180 * offsets[n-3]) if 2<n<10 else 0
+	angles = [offset + (pi * 2 / n * i) for i in range(n)]
+	return [(cos(angle_rad), sin(angle_rad)) for angle_rad in angles][::-1]
 
-def polygonCircleExtension(self):
+def polygonCircleExtension(self, nsides=6):
 	def f(center=(0,0), r=1, **extra):
-		pts = [ (x*r+center[0], y*r+center[1]) for (x, y) in polygonTemplate]
+		pts = [ (x*r+center[0], y*r+center[1]) for (x, y) in unitcircle_N_poly(nsides)]
 		return self.polygon(pts, **extra)
 	return f
 
 class PCGenerator:
-
-	def __init__(self, handler, data, machine_id, vert_repeat, is_blank = False,
-				 is_solid_fill = False, use_laser_colors = False, polygon_circle = False):
+	"""
+	initialise with handler or None for file output
+	- data is lines of strings using X for holes, anything else for blank
+	- machine_id is the name of the json file with shape config parameters
+	- vert_repeat to repeat the pattern down the page
+	- is_blank = True means draw punchcard but ignore pattern and
+	  use vert_repeat for number of lines
+	- is_solid_fill = True means fill pattern circles with Black
+	   False means do not fill them at all - for cricut style cutters
+	- use_laser_colors = True overides the circle outlines to blue - meaning cut
+	  if is_blank is True then dots will be drawn red instead of black
+	- circle_facets = True means use a hex shape instead of a circle - speeds up cutting 
+	  If circle_facets is a number - use that many edges to approx circle
+	Note:
+	- mylar support is on for the EC1 otherwise use is_solid_fill=True
+	- asking for laser and solid fill will ignore solid fill
+	"""
+	def __init__(self, handler, data, machine_id, vert_repeat=1, is_blank = False,
+				 is_solid_fill = False, use_laser_colors = False, circle_facets = False):
 
 		global machine_config
 
 		self.handler = handler
 		data_dir = os.path.join(os.path.dirname(__file__), '../data/')
-		with open("{}/{}.json".format(data_dir, machine_id)) as json_config:
+		filepath = os.path.abspath(os.path.join(data_dir, f"{machine_id}.json"))
+		with open(filepath) as json_config:
 			machine_config = json.loads(json_config.read())
 		if is_blank:
 			self.data = ['x' * machine_config['stitches']]
@@ -127,13 +148,16 @@ class PCGenerator:
 			is_blank,
 			is_solid_fill,
 			use_laser_colors)
-		self.polygon_circle = polygon_circle
+		self.circle_facets = circle_facets
 
 	def generate(self):
 
 		diagram, outline = self.create_card()
-		if self.polygon_circle:
-			diagram.circle = polygonCircleExtension(diagram)
+		if self.circle_facets:
+			nsides = 6
+			if isinstance(self.circle_facets, int):
+				nsides = self.circle_facets
+			diagram.circle = polygonCircleExtension(diagram, nsides)
 
 		cut = []  # separated for laser into cutting lines and drawing lines 
 		draw = []
@@ -198,7 +222,7 @@ class PCGenerator:
 
 		outline = diagram.polygon(
 			points=self.get_card_shape(),
-			fill="fill:none",  #'white',
+			style="fill:none",  #'white'
 			stroke='black',
 			stroke_width=.1)
 
@@ -208,7 +232,7 @@ class PCGenerator:
 
 		#if self.layout.solid_fill:
 		#	fill = 'red'
-		#else:
+		#else:  # not used now
 		#	fill = 'white'
 
 		# main body of card
@@ -222,7 +246,7 @@ class PCGenerator:
 							if lines[rows][stitches].upper() == 'X':
 								objects.append(diagram.circle(
 									center=(xoffset, yoffset),
-									fill=None if self.layout.solid_fill else "fill:none",  #fill
+									style=None if self.layout.solid_fill else "fill:none",
 									r = (self.layout.pattern_hole_diameter / 2),
 									stroke='black',
 									stroke_width=.1))
@@ -246,7 +270,7 @@ class PCGenerator:
 				for stitches in range(self.layout.card_stitches):
 					objects.append(diagram.circle(
 						center=(xoffset, yoffset),
-						fill="fill:none",  #'white',
+						style="fill:none",  #'white',
 						r = (self.layout.pattern_hole_diameter / 2),
 						stroke='black',
 						stroke_width=.1))
@@ -261,7 +285,7 @@ class PCGenerator:
 				for stitches in range(self.layout.card_stitches):
 					objects.append(diagram.circle(
 						center=(xoffset, yoffset),
-						fill="fill:none",  #'white',
+						style="fill:none",  #'white',
 						r = (self.layout.pattern_hole_diameter / 2),
 						stroke='black',
 						stroke_width=.1))
@@ -297,14 +321,14 @@ class PCGenerator:
 			# holes on left
 			objects.append(diagram.circle(
 				center=(left_xoffset, yoffset),
-				fill="fill:none",  #'white',
+				style="fill:none",  #'white',
 				r = (diameter / 2),
 				stroke='black',
 				stroke_width=.1))
 			# holes on right
 			objects.append(diagram.circle(
 				center=(right_xoffset, yoffset),
-				fill="fill:none",  #'white',
+				style="fill:none",  #'white',
 				r = (diameter / 2),
 				stroke='black',
 				stroke_width=.1))
@@ -352,3 +376,16 @@ class PCGenerator:
 		p = ( self.layout.corner_offset, 1)
 
 		return [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p]
+
+
+if __name__ == "__main__":
+	pattern = '--x---\n--xxxx\n-xxxx-\nxxxx--\n---x--\n'
+	machine = '12-stitch-br-sr'
+	generator = PCGenerator(None, pattern, machine, vert_repeat=6,
+							is_blank=False, is_solid_fill=True,
+							use_laser_colors=True, circle_facets=8)
+	result = generator.generate()
+	#print(result)
+	text_file = open(f"{machine}test.svg", "w")
+	text_file.write(result)
+	text_file.close()
